@@ -1,0 +1,77 @@
+@import url('https://fonts.googleapis.com/css2?family=Caveat:wght@400;700&family=Inter:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --animate-bounce-slow: bounce-slow 3s infinite;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-hand: "Caveat", cursive;
+
+  --color-indigo-50: #e0e7ff;
+  --color-indigo-100: #c7d2fe;
+  --color-indigo-200: #a5b4fc;
+  --color-indigo-500: #6366f1;
+  --color-indigo-600: #4f46e5;
+  --color-indigo-700: #4338ca;
+  --color-indigo-800: #3730a3;
+  --color-indigo-900: #312e81;
+  
+  --color-slate-50: #f8fafc;
+  --color-slate-100: #f1f5f9;
+  --color-slate-200: #e2e8f0;
+  --color-slate-300: #cbd5e1;
+  --color-slate-400: #94a3b8;
+  --color-slate-500: #64748b;
+  --color-slate-600: #475569;
+  --color-slate-700: #334155;
+  --color-slate-800: #1e293b;
+
+  @keyframes bounce-slow {
+    0%, 100% {
+      transform: translateY(-5%);
+      animation-timing-function: cubic-bezier(0.8, 0, 1, 1);
+    }
+    50% {
+      transform: translateY(0);
+      animation-timing-function: cubic-bezier(0, 0, 0.2, 1);
+    }
+  }
+}
+
+body {
+  @apply bg-slate-50 font-sans;
+}
+
+canvas {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  @apply bg-slate-100;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-slate-300 rounded-full hover:bg-slate-400 transition-colors;
+}
+
+.pdf-page-container {
+  aspect-ratio: auto;
+}
+
+.notebook-paper {
+  background-color: #fff9e6;
+  background-image: 
+    linear-gradient(#f0e6cc 1px, transparent 1px),
+    linear-gradient(90deg, #f0e6cc 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+.notebook-lines {
+  background-color: #fff;
+  background-image: linear-gradient(rgba(0,0,0,.05) 1px, transparent 1px);
+  background-size: 100% 2.5rem;
+  line-height: 2.5rem;
+}

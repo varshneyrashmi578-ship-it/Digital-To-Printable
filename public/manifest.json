@@ -1,0 +1,17 @@
+{
+  "name": "Digital To Printable",
+  "short_name": "DigiPrint",
+  "description": "Convert dark classroom slides to ink-saving printable PDFs.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#4f46e5",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/9446/9446700.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
