@@ -414,7 +414,7 @@ export default function App() {
       {/* Header */}
       <header className="sticky top-0 z-50 border-b border-slate-200 bg-white/80 backdrop-blur-md">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6">
-          <div className="flex items-center gap-2" onClick={() => setState('landing')}>
+          <div className="flex items-center gap-2 cursor-pointer" onClick={() => setState('landing')}>
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-600 text-white shadow-lg shadow-indigo-200">
               <Printer className="h-6 w-6" />
             </div>
@@ -455,7 +455,7 @@ export default function App() {
               className="flex flex-col items-center justify-center py-12 text-center"
             >
               <div className="mb-6 flex animate-bounce-slow items-center justify-center rounded-2xl bg-indigo-50 p-6">
-                <FileText className="h-16 w-16 text-indigo-600" />
+                <Printer className="h-16 w-16 text-indigo-600" />
               </div>
               <h2 className="mb-4 text-4xl font-extrabold tracking-tight sm:text-5xl">
                 Ink-Saving <span className="text-indigo-600">Smart-Board</span> <br /> Multi-Doc Converter
