@@ -31,7 +31,24 @@ import { GoogleGenAI } from "@google/genai";
 pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
 
       // Initialization - Using Gemini for summary
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const aiRef = { current: null as GoogleGenAI | null };
+
+function getAI() {
+  if (!aiRef.current) {
+    let apiKey: string | undefined;
+    try {
+      apiKey = process.env.GEMINI_API_KEY;
+    } catch (e) {
+      // process.env might not be defined in some browser environments
+    }
+    
+    if (!apiKey || apiKey === "undefined" || apiKey === "") {
+      throw new Error("AI Feature Unavailable: GEMINI_API_KEY is not set. Please add it to your environment variables to enable summaries.");
+    }
+    aiRef.current = new GoogleGenAI({ apiKey });
+  }
+  return aiRef.current;
+}
 
 type AppState = 'landing' | 'upload' | 'edit' | 'options' | 'processing' | 'result';
 
@@ -336,6 +353,7 @@ export default function App() {
       CONTENT:
       ${fullText.slice(0, 18000)}`;
 
+      const ai = getAI();
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: prompt,
@@ -459,7 +477,7 @@ export default function App() {
                   className="flex items-center gap-3 rounded-2xl bg-white px-8 py-4 text-lg font-bold text-slate-700 shadow-lg border border-slate-100 transition-all hover:-translate-y-1 hover:bg-slate-50 active:scale-95"
                 >
                   <Smartphone className="h-6 w-6 text-indigo-600" />
-                  Download App
+                  {deferredPrompt ? 'Install App' : 'Download App'}
                 </button>
               </div>
 

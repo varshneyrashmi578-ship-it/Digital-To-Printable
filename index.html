@@ -9,6 +9,19 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      window.onerror = function(msg, url, lineNo, columnNo, error) {
+        var root = document.getElementById('root');
+        if (root && root.innerHTML === '') {
+          root.innerHTML = '<div style="padding: 20px; color: #b91c1c; font-family: sans-serif;">' +
+            '<h3>Application Error</h3>' +
+            '<p style="font-size: 14px;">' + msg + '</p>' +
+            '<button onclick="location.reload()" style="background: #4f46e5; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer;">Reload Application</button>' +
+            '</div>';
+        }
+        return false;
+      };
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
