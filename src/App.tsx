@@ -23,15 +23,18 @@ import {
   Eye,
   Share2
 } from 'lucide-react';
+import toast, { Toaster } from 'react-hot-toast';
 import * as pdfjs from 'pdfjs-dist';
 import { PDFDocument, rgb } from 'pdf-lib';
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 // Configure PDF.js worker
-pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
+if (typeof window !== 'undefined') {
+  pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs`;
+}
 
       // Initialization - Using Gemini for summary
-const aiRef = { current: null as GoogleGenAI | null };
+const aiRef = { current: null as GoogleGenerativeAI | null };
 
 function getAI() {
   if (!aiRef.current) {
@@ -45,7 +48,7 @@ function getAI() {
     if (!apiKey || apiKey === "undefined" || apiKey === "") {
       throw new Error("AI Feature Unavailable: GEMINI_API_KEY is not set. Please add it to your environment variables to enable summaries.");
     }
-    aiRef.current = new GoogleGenAI({ apiKey });
+    aiRef.current = new GoogleGenerativeAI(apiKey);
   }
   return aiRef.current;
 }
@@ -73,12 +76,14 @@ export default function App() {
   const [state, setState] = useState<AppState>('landing');
   const [pdfFiles, setPdfFiles] = useState<File[]>([]);
   const [pages, setPages] = useState<PDFPage[]>([]);
+  const [thumbLoading, setThumbLoading] = useState<Record<string, boolean>>({});
   const [layout, setLayout] = useState<number>(1);
   const [mode, setMode] = useState<'bw' | 'color'>('bw');
   const [showBorders, setShowBorders] = useState<boolean>(true);
   const [isProcessing, setIsProcessing] = useState(false);
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [processedPdfBlob, setProcessedPdfBlob] = useState<Blob | null>(null);
+  const [progress, setProgress] = useState(0);
   const [history, setHistory] = useState<ConversionRecord[]>([]);
   const [summary, setSummary] = useState<string>('');
   const [activeStep, setActiveStep] = useState(0);
@@ -91,11 +96,6 @@ export default function App() {
     };
     window.addEventListener('beforeinstallprompt', handler);
     
-    // Register SW
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js');
-    }
-
     return () => window.removeEventListener('beforeinstallprompt', handler);
   }, []);
 
@@ -139,6 +139,7 @@ export default function App() {
     setPdfFiles(files);
     setIsProcessing(true);
     setState('processing');
+    setProgress(5);
 
     try {
       const allLoadedPages: PDFPage[] = [];
@@ -146,27 +147,46 @@ export default function App() {
       for (let fIdx = 0; fIdx < files.length; fIdx++) {
         const file = files[fIdx];
         const arrayBuffer = await file.arrayBuffer();
-        const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+        const pdf = await pdfjs.getDocument({ 
+          data: new Uint8Array(arrayBuffer)
+        }).promise;
 
         for (let i = 1; i <= pdf.numPages; i++) {
+          const pageId = `${fIdx}-${i}`;
+          setThumbLoading(prev => ({ ...prev, [pageId]: true }));
+          setProgress(Math.round(((fIdx * 100) / files.length) + ((i * 100) / (pdf.numPages * files.length))));
+          
           const page = await pdf.getPage(i);
-          // Ultra-high scale for sharper preview text
-          const viewport = page.getViewport({ scale: 2.5 }); 
+          const viewport = page.getViewport({ scale: 1.5 }); 
           const canvas = document.createElement('canvas');
-          const context = canvas.getContext('2d')!;
-          canvas.height = viewport.height;
-          canvas.width = viewport.width;
+          const context = canvas.getContext('2d', { willReadFrequently: true })!;
+          canvas.height = Math.round(viewport.height);
+          canvas.width = Math.round(viewport.width);
+
+          context.fillStyle = '#ffffff';
+          context.fillRect(0, 0, canvas.width, canvas.height);
 
           await page.render({ canvasContext: context, viewport }).promise;
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+          
+          if (!dataUrl || dataUrl.length < 100) {
+            console.warn(`Render quality issue for page ${i}`);
+          }
+
           allLoadedPages.push({
-            id: `${fIdx}-${i}`,
+            id: pageId,
             fileIndex: fIdx,
             pageNumber: i,
-            dataUrl: canvas.toDataURL('image/jpeg', 0.98), // High quality preview
+            dataUrl,
             selected: true,
             width: viewport.width,
             height: viewport.height
           });
+          
+          setThumbLoading(prev => ({ ...prev, [pageId]: false }));
+          // Release memory
+          canvas.width = 0;
+          canvas.height = 0;
         }
       }
 
@@ -226,85 +246,127 @@ export default function App() {
       const processPage = async (pageInfo: typeof selectedPages[0], index: number) => {
         const pdfDoc = pdfjsDocs[pageInfo.fileIndex];
         const page = await pdfDoc.getPage(pageInfo.pageNumber);
-        const viewport = page.getViewport({ scale: 5.0 });
+        
+        // Grid scale: 2.5 (High resolution for printing)
+        const viewport = page.getViewport({ scale: 2.5 }); 
         
         const canvas = document.createElement('canvas');
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
+        canvas.width = Math.round(viewport.width);
+        canvas.height = Math.round(viewport.height);
         const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+        
+        // IMPORTANT: Fill with white to prevent transparency issues causing blank/black pages
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
         await page.render({ canvasContext: ctx, viewport }).promise;
 
         const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const data = imgData.data;
+        const len = data.length;
 
-        if (mode === 'bw') {
-          for (let j = 0; j < data.length; j += 4) {
-            const avg = (data[j] + data[j+1] + data[j+2]) / 3;
-            if (avg < 128) {
-              data[j] = 255; data[j+1] = 255; data[j+2] = 255; 
-            } else {
-              data[j] = 0; data[j+1] = 0; data[j+2] = 0;
-            }
-          }
-        } else {
-          for (let j = 0; j < data.length; j += 4) {
-            const avg = (data[j] + data[j+1] + data[j+2]) / 3;
-            if (avg < 110) {
-              data[j] = 255; data[j+1] = 255; data[j+2] = 255;
+        // SMART BW LOGIC: Detect if page is mostly dark or mostly bright
+        let darkPixels = 0;
+        let totalSamples = 0;
+        const marginX = Math.floor(canvas.width * 0.1); 
+        const marginY = Math.floor(canvas.height * 0.1);
+        
+        for (let y = marginY; y < canvas.height - marginY; y += 40) {
+          for (let x = marginX; x < canvas.width - marginX; x += 40) {
+            const idx = (y * canvas.width + x) * 4;
+            if (idx + 3 < len) {
+              if ((data[idx] + data[idx+1] + data[idx+2]) / 3 < 100) darkPixels++;
+              totalSamples++;
             }
           }
         }
-        ctx.putImageData(imgData, 0, 0);
+        const isMostlyDark = totalSamples > 0 && (darkPixels / totalSamples) > 0.4;
 
-        const imgBytes = canvas.toDataURL('image/jpeg', 1.0);
-        return { imgBytes, index };
+        if (mode === 'bw') {
+          for (let j = 0; j < len; j += 4) {
+            const avg = (data[j] + data[j+1] + data[j+2]) / 3;
+            let val = avg;
+            if (isMostlyDark) {
+              // Dark Background -> Invert (Ink Saving)
+              val = 255 - avg;
+            }
+            // Clean up with threshold
+            val = val < 160 ? 0 : 255;
+            data[j] = val;
+            data[j+1] = val;
+            data[j+2] = val;
+          }
+        } else {
+          // Color Mode: Preserve original colors exactly as requested by user
+          // No inversion or artificial cleanup that changes original appearance
+        }
+        ctx.putImageData(imgData, 0, 0);
+        const imgDataUrl = canvas.toDataURL('image/jpeg', 0.82); 
+        
+        // Robust Base64 to Uint8Array conversion for pdf-lib
+        const base64Content = imgDataUrl.split(',')[1];
+        if (!base64Content) throw new Error("Failed to generate image data for page " + index);
+        
+        const binStr = atob(base64Content);
+        const bytes = new Uint8Array(binStr.length);
+        for (let j = 0; j < binStr.length; j++) {
+          bytes[j] = binStr.charCodeAt(j);
+        }
+        
+        // Cleanup canvas memory
+        canvas.width = 0;
+        canvas.height = 0;
+        
+        return { bytes, index };
       };
 
-      // Process in batches of 4 for speed + stability
-      const batchSize = 4;
-      for (let i = 0; i < selectedPages.length; i += batchSize) {
-        const batch = selectedPages.slice(i, i + batchSize);
-        const results = await Promise.all(batch.map((page, idx) => processPage(page, i + idx)));
+      // Sequential processing to avoid memory/canvas context pressure
+      for (let i = 0; i < selectedPages.length; i++) {
+        setProgress(Math.round((i / selectedPages.length) * 100));
+        
+        // Brief pause to allow UI thread to breathe and avoid "Vite server connection lost"
+        if (i % 3 === 0) await new Promise(r => setTimeout(r, 50));
 
-        for (const res of results) {
-          if (itemIndex > 0 && itemIndex % (cols * rows) === 0) {
-            currentPage = outPdf.addPage([pageWidth, pageHeight]);
-          }
+        const pageInfo = selectedPages[i];
+        const res = await processPage(pageInfo, i);
 
-          const embeddedImg = await outPdf.embedJpg(res.imgBytes);
-          const localIndex = itemIndex % (cols * rows);
-          const colIndex = localIndex % cols;
-          const rowIndex = Math.floor(localIndex / cols);
+        if (itemIndex > 0 && itemIndex % (cols * rows) === 0) {
+          currentPage = outPdf.addPage([pageWidth, pageHeight]);
+        }
 
-          const imgDims = embeddedImg.scale(1);
-          const marginFactor = showBorders ? 0.92 : 0.95; 
-          const scale = Math.min((cellWidth * marginFactor) / imgDims.width, (cellHeight * marginFactor) / imgDims.height);
-          const drawWidth = imgDims.width * scale;
-          const drawHeight = imgDims.height * scale;
+        const embeddedImg = await outPdf.embedJpg(res.bytes);
+        const localIndex = itemIndex % (cols * rows);
+        const colIndex = localIndex % cols;
+        const rowIndex = Math.floor(localIndex / cols);
 
-          const x = colIndex * cellWidth + (cellWidth - drawWidth) / 2;
-          const y = pageHeight - ((rowIndex + 1) * cellHeight) + (cellHeight - drawHeight) / 2;
+        const imgDims = embeddedImg.scale(1);
+        const marginFactor = showBorders ? 0.92 : 0.95; 
+        const scale = Math.min((cellWidth * marginFactor) / imgDims.width, (cellHeight * marginFactor) / imgDims.height);
+        const drawWidth = imgDims.width * scale;
+        const drawHeight = imgDims.height * scale;
 
-          currentPage.drawImage(embeddedImg, {
+        const x = colIndex * cellWidth + (cellWidth - drawWidth) / 2;
+        const y = pageHeight - ((rowIndex + 1) * cellHeight) + (cellHeight - drawHeight) / 2;
+
+        currentPage.drawImage(embeddedImg, {
+          x,
+          y,
+          width: drawWidth,
+          height: drawHeight,
+        });
+
+        if (showBorders) {
+          currentPage.drawRectangle({
             x,
             y,
             width: drawWidth,
             height: drawHeight,
+            borderColor: rgb(0.85, 0.85, 0.85),
+            borderWidth: 0.5,
           });
-
-          if (showBorders) {
-            currentPage.drawRectangle({
-              x,
-              y,
-              width: drawWidth,
-              height: drawHeight,
-              borderColor: rgb(0.85, 0.85, 0.85),
-              borderWidth: 0.5,
-            });
-          }
-
-          itemIndex++;
         }
+
+        itemIndex++;
       }
 
       const pdfBytes = await outPdf.save();
@@ -338,28 +400,24 @@ export default function App() {
         if (fullText.length > 18000) break;
       }
 
-      const prompt = `You are a helpful study buddy. Analyze these notes and give me a summary in SIMPLE, EASY LANGUAGE (like a student talking to another student).
+      const prompt = `Act as a senior student summarizing lecture notes for a friend. 
+      Analyze the text below and create a summary.
+      - USE SIMPLE, CONVERSATIONAL LANGUAGE.
+      - HIGHLIGHT MAIN CONCEPTS IN 3-5 BULLET POINTS.
+      - IDENTIFY IMPORTANT HIGHLIGHTS OR EXAM TIPS.
+      - PREDICT 3 POSSIBLE EXAM QUESTIONS.
+      - END WITH A "TL;DR" (2-SENTENCE SUMMARY).
       
-      Structure it like this:
-      - 📝 WHAT'S THIS ALL ABOUT? (Simple overview)
-      - 💡 THE MAIN STUFF: (Bullet points of key concepts)
-      - ✨ IMPORTANT (STARS/MARKS): (What did the teacher highlight? Look for stars ★)
-      - ❓ QUESTIONS TO ASK YOURSELF: (Predict exam questions)
-      - 🚀 SUMMARY IN 2 SENTENCES: (Super quick version)
-
-      Use friendly, conversational tones. Make sure to catch any technical formulas or definitions but explain them simply.
-      Length: About 1-2 full pages of info.
-      
-      CONTENT:
-      ${fullText.slice(0, 18000)}`;
+      FILE CONTENT:
+      ${fullText.slice(0, 15000)}`;
 
       const ai = getAI();
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
-      });
+      // Using gemini-1.5-flash for maximum speed
+      const model = ai.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const result = await model.generateContent(prompt);
+      const responseText = result.response.text();
 
-      setSummary(response.text || "Could not generate summary.");
+      setSummary(responseText || "Could not generate summary.");
     } catch (error) {
       console.error('Summary error:', error);
       setSummary("Error generating summary.");
@@ -390,9 +448,10 @@ export default function App() {
     try {
       if (navigator.share) {
         await navigator.share(shareData);
+        toast.success('Shared successfully!');
       } else {
         await navigator.clipboard.writeText(`${shareData.text} \nTry it here: ${shareData.url}`);
-        alert('Share link & text copied to clipboard!');
+        toast.success('Link copied to clipboard!');
       }
     } catch (err) {
       console.error('Share failed:', err);
@@ -407,6 +466,7 @@ export default function App() {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+    toast.success('Download started!');
   };
 
   return (
@@ -419,8 +479,8 @@ export default function App() {
               <Printer className="h-6 w-6" />
             </div>
             <div>
-              <h1 className="text-lg font-bold tracking-tight text-slate-900">DigitalToPrintable</h1>
-              <p className="hidden text-[10px] font-medium uppercase tracking-wider text-slate-500 sm:block">Eco-Friendly Study Notes</p>
+              <h1 className="text-xl font-black tracking-tight text-slate-900 leading-none">DigitalToPrintable</h1>
+              <p className="hidden text-[10px] font-bold uppercase tracking-widest text-slate-400 sm:block mt-1">Smart Document Workflow</p>
             </div>
           </div>
           <div className="flex items-center gap-4">
@@ -454,8 +514,8 @@ export default function App() {
               exit={{ opacity: 0, y: -20 }}
               className="flex flex-col items-center justify-center py-12 text-center"
             >
-              <div className="mb-6 flex animate-bounce-slow items-center justify-center rounded-2xl bg-indigo-50 p-6">
-                <Printer className="h-16 w-16 text-indigo-600" />
+              <div className="mb-6 flex animate-bounce-slow items-center justify-center rounded-3xl bg-indigo-600 shadow-xl shadow-indigo-100 h-24 w-24 border-4 border-white">
+                <Printer className="h-12 w-12 text-white" />
               </div>
               <h2 className="mb-4 text-4xl font-extrabold tracking-tight sm:text-5xl">
                 Ink-Saving <span className="text-indigo-600">Smart-Board</span> <br /> Multi-Doc Converter
@@ -600,13 +660,20 @@ export default function App() {
                       page.selected ? 'border-indigo-600 shadow-md scale-[0.98]' : 'border-slate-100 opacity-50 grayscale'
                     }`}
                   >
-                    <div className="relative aspect-video w-full overflow-hidden bg-slate-100 flex items-center justify-center p-2">
-                      <img 
-                        src={page.dataUrl} 
-                        alt={`Page ${page.pageNumber}`} 
-                        className="h-full w-full object-contain shadow-sm" 
-                      />
-                    </div>
+                      <div className="relative aspect-video w-full overflow-hidden bg-slate-100 flex items-center justify-center p-2">
+                        {thumbLoading[page.id] ? (
+                          <div className="flex flex-col items-center gap-2">
+                            <Loader2 className="h-6 w-6 animate-spin text-indigo-400" />
+                            <span className="text-[10px] font-bold text-slate-400">Rendering...</span>
+                          </div>
+                        ) : (
+                          <img 
+                            src={page.dataUrl} 
+                            alt={`Page ${page.pageNumber}`} 
+                            className="h-full w-full object-contain shadow-sm" 
+                          />
+                        )}
+                      </div>
                     <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 p-2 text-center text-[10px] font-bold text-white opacity-0 transition-opacity group-hover:opacity-100">
                       File {page.fileIndex + 1} • Page {page.pageNumber}
                     </div>
@@ -798,21 +865,22 @@ export default function App() {
               animate={{ opacity: 1 }}
               className="flex flex-col items-center justify-center py-24 text-center"
             >
-              <div className="relative mb-12 flex h-32 w-32 items-center justify-center">
+              <div className="relative mb-12 flex h-40 w-40 items-center justify-center">
                 <div className="absolute inset-0 animate-ping rounded-full bg-indigo-100 opacity-20"></div>
-                <div className="absolute inset-2 animate-pulse rounded-full bg-indigo-50 opacity-40"></div>
-                <div className="relative flex h-20 w-20 items-center justify-center rounded-2xl bg-white shadow-xl shadow-indigo-100">
-                   <Loader2 className="h-10 w-10 animate-spin text-indigo-600" />
+                <div className="absolute inset-4 animate-pulse rounded-full bg-indigo-50 opacity-40"></div>
+                <div className="relative flex h-28 w-28 flex-col items-center justify-center rounded-3xl bg-white shadow-2xl shadow-indigo-100">
+                   <div className="mb-2 text-2xl font-black text-indigo-600 font-mono">{progress}%</div>
+                   <Loader2 className="h-8 w-8 animate-spin text-indigo-400" />
                 </div>
               </div>
               
               <div className="space-y-4">
                 <h3 className="text-2xl font-bold tracking-tight">Optimizing Your Document</h3>
                 <div className="flex flex-col items-center gap-2">
-                  <LoadingStep label="Reading High-Res PDF" active={true} />
-                  <LoadingStep label="Removing Board Background" active={true} />
-                  <LoadingStep label="Arranging N-in-1 Grid" active={true} />
-                  <LoadingStep label="Finalizing On-Device Print-File" active={true} />
+                  <LoadingStep label="Reading High-Res PDF" active={progress >= 0} />
+                  <LoadingStep label="Removing Board Background" active={progress >= 30} />
+                  <LoadingStep label="Arranging N-in-1 Grid" active={progress >= 60} />
+                  <LoadingStep label="Finalizing On-Device Print-File" active={progress >= 90} />
                 </div>
                 
                 {deferredPrompt && (
@@ -847,15 +915,35 @@ export default function App() {
               
               {processedPdfUrl && (
                 <div className="mb-10 w-full overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
-                  <div className="bg-slate-50 px-4 py-2 text-left text-xs font-bold uppercase tracking-wider text-slate-400">
-                    Converted Preview
+                  <div className="bg-slate-50 px-4 py-3 flex items-center justify-between border-b border-slate-100">
+                    <span className="text-xs font-black uppercase tracking-[0.2em] text-slate-400">PDF Document Ready</span>
+                    <div className="flex gap-2">
+                       <span className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+                       <span className="h-2 w-2 rounded-full bg-green-300" />
+                    </div>
                   </div>
-                  <iframe 
-                    key={processedPdfUrl}
-                    src={`${processedPdfUrl}#toolbar=0`} 
-                    className="h-[600px] w-full border-none"
-                    title="PDF Preview"
-                  />
+                  {/* Robust preview using iframe as primary for better compatibility */}
+                  <div className="relative h-[600px] w-full bg-slate-100 flex flex-col">
+                    <iframe
+                      src={`${processedPdfUrl}#toolbar=0&view=FitH`}
+                      className="flex-1 w-full border-none"
+                      title="PDF Preview"
+                    />
+                    
+                    <div className="bg-white p-4 border-t border-slate-100 flex flex-col gap-3 sm:flex-row sm:justify-between items-center">
+                       <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
+                          <Eye className="h-4 w-4 text-indigo-400" />
+                          <span>Preview rendering...</span>
+                       </div>
+                       <button 
+                         onClick={() => window.open(processedPdfUrl, '_blank')}
+                         className="flex items-center gap-2 text-sm font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-50 px-4 py-2 rounded-lg transition-colors"
+                       >
+                         <Eye className="h-4 w-4" />
+                         Open Full Preview
+                       </button>
+                    </div>
+                  </div>
                 </div>
               )}
 
@@ -892,6 +980,8 @@ export default function App() {
           )}
         </AnimatePresence>
       </main>
+
+      <Toaster position="bottom-right" />
 
       <footer className="mt-auto border-t border-slate-200 bg-white py-12">
         <div className="mx-auto max-w-7xl px-4 text-center sm:px-6">
@@ -930,6 +1020,7 @@ export default function App() {
           </div>
         </div>
       </footer>
+      <Toaster position="bottom-center" />
     </div>
   );
 }
